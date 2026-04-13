@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>おひとりオフィス</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
+    <style>
+        body { padding: 2rem; }
+        .hidden { display: none; }
+        .action-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+        #report-form { margin-bottom: 1.5rem; }
+        #user-info, #todays-activity { margin-top: 2rem; }
+        #activity-feed p { margin-bottom: 0.5rem; }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>おひとりオフィス</h1>
+            <div id="auth-section">
+                <button id="login-btn">Googleでログイン</button>
+                <button id="logout-btn" class="hidden secondary">ログアウト</button>
+            </div>
+        </header>
+
+        <div id="app-section" class="hidden">
+            <div id="user-info">
+                <p>ログイン中: <strong id="user-email"></strong></p>
+                <p>現在のステータス: <strong id="status"></strong></p>
+            </div>
+
+            <div class="action-buttons">
+                <button id="btn-clock-in" data-mode="出勤">出勤</button>
+                <button id="btn-clock-out" data-mode="退勤">退勤</button>
+                <button id="btn-start-break" data-mode="休憩">休憩</button>
+                <button id="btn-end-break" data-mode="復帰">復帰</button>
+            </div>
+
+            <form id="report-form">
+                <label for="message">報告・メモ</label>
+                <textarea id="message" name="message" required></textarea>
+                <button type="submit" data-mode="報告">報告する</button>
+            </form>
+
+            <section id="todays-activity">
+                <h3>本日の活動</h3>
+                <div id="activity-feed"></div>
+            </section>
+
+            <section id="my-history">
+                <h3>自分の履歴</h3>
+                <figure>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>日時</th>
+                                <th>モード</th>
+                                <th>メッセージ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body"></tbody>
+                    </table>
+                </figure>
+            </section>
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        // --- CONFIGURATION ---
+        const SUPABASE_URL = 'https://mhfnlunlthcfyxofoczn.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_3jnvblL9f67SK7GdWAbl3w_6SXP2hWt';
+        // -------------------
+
+        const { createClient } = supabase;
+        const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+            auth: { flowType: 'implicit' }
+        });
+
+        // DOM Elements
+        const loginBtn = document.getElementById('login-btn');
+        const logoutBtn = document.getElementById('logout-btn');
+        const appSection = document.getElementById('app-section');
+        const userEmailEl = document.getElementById('user-email');
+        const statusEl = document.getElementById('status');
+        const historyBody = document.getElementById('history-body');
+        const reportForm = document.getElementById('report-form');
+        const messageInput = document.getElementById('message');
+        const activityFeed = document.getElementById('activity-feed');
+        const actionBtns = {
+            clockIn: document.getElementById('btn-clock-in'),
+            clockOut: document.getElementById('btn-clock-out'),
+            startBreak: document.getElementById('btn-start-break'),
+            endBreak: document.getElementById('btn-end-break'),
+        };
+
+        let currentUserStatus = '勤務外';
+        let isSubmitting = false;
+        let realtimeChannel = null;
+
+        // --- Main Update Functions ---
+        const updateButtonStates = () => {
+            // Disable all buttons first
+            Object.values(actionBtns).forEach(btn => btn.disabled = true);
+
+            switch (currentUserStatus) {
+                case '勤務中':
+                    actionBtns.clockOut.disabled = false;
+                    actionBtns.startBreak.disabled = false;
+                    break;
+                case '休憩中':
+                    actionBtns.endBreak.disabled = false;
+                    break;
+                case '勤務外':
+                default:
+                    actionBtns.clockIn.disabled = false;
+                    break;
+            }
+        };
+
+        const fetchMyHistory = async (userId) => {
+            const { data, error } = await sb
+                .from('time_entries')
+                .select('created_at, mode, message')
+                .eq('user_id', userId)
+                .order('created_at', { ascending: false })
+                .limit(20);
+
+            if (error) {
+                console.error('Error fetching history:', error.message);
+                return;
+            }
+
+            historyBody.innerHTML = data.map(entry => `
+                <tr>
+                    <td>${new Date(entry.created_at).toLocaleString('ja-JP')}</td>
+                    <td>${entry.mode}</td>
+                    <td>${entry.message || ''}</td>
+                </tr>
+            `).join('');
+
+            const lastEntry = data.find(e => e.mode !== '報告');
+            if (lastEntry) {
+                switch(lastEntry.mode) {
+                    case '出勤':
+                    case '復帰':
+                        currentUserStatus = '勤務中';
+                        break;
+                    case '退勤':
+                        currentUserStatus = '勤務外';
+                        break;
+                    case '休憩':
+                        currentUserStatus = '休憩中';
+                        break;
+                    default:
+                        currentUserStatus = '勤務外';
+                }
+            } else {
+                currentUserStatus = '勤務外';
+            }
+            statusEl.textContent = currentUserStatus;
+            updateButtonStates();
+        };
+
+        const fetchTodaysActivity = async () => {
+            const { data, error } = await sb.rpc('get_todays_activities');
+
+            if (error) {
+                console.error('Error fetching activity feed:', error.message);
+                return;
+            }
+
+            activityFeed.innerHTML = data.map(entry => {
+                const time = new Date(entry.created_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+                const username = entry.email.split('@')[0];
+                const action = entry.mode + 'しました。';
+                return `<p>${time} ${username} が ${action}</p>`;
+            }).join('');
+        };
+
+        const updateUI = async (user) => {
+            if (user) {
+                if (!user.email.endsWith('@otsuma.ac.jp')) {
+                    await sb.auth.signOut();
+                    alert('このサービスは otsuma.ac.jp のアカウントのみ使用できます。');
+                    return;
+                }
+
+                appSection.classList.remove('hidden');
+                loginBtn.classList.add('hidden');
+                logoutBtn.classList.remove('hidden');
+                userEmailEl.textContent = user.email;
+
+                await fetchMyHistory(user.id);
+                await fetchTodaysActivity();
+                setupRealtime(user.id);
+            } else {
+                appSection.classList.add('hidden');
+                loginBtn.classList.remove('hidden');
+                logoutBtn.classList.add('hidden');
+                if (realtimeChannel) {
+                    sb.removeChannel(realtimeChannel);
+                    realtimeChannel = null;
+                }
+            }
+        };
+
+        // --- Event Handlers ---
+        const handleLogin = async () => {
+            await sb.auth.signInWithOAuth({
+                provider: 'google',
+                options: {
+                    redirectTo: window.location.origin + window.location.pathname
+                }
+            });
+        };
+
+        const handleLogout = async () => {
+            await sb.auth.signOut();
+        };
+
+        const addEntry = async (mode, message = null) => {
+            if (isSubmitting) return;
+            isSubmitting = true;
+            Object.values(actionBtns).forEach(btn => btn.disabled = true);
+            reportForm.querySelector('button[type="submit"]').disabled = true;
+
+            try {
+                const { data: { user } } = await sb.auth.getUser();
+                if (!user) return;
+
+                const { error } = await sb.from('time_entries').insert({ mode, message });
+                if (error) {
+                    console.error('Error adding entry:', error);
+                    alert('記録に失敗しました。');
+                    updateButtonStates();
+                } else {
+                    if (mode === '報告') messageInput.value = '';
+                    await fetchMyHistory(user.id);
+                    // fetchTodaysActivity はリアルタイムで自動更新される
+                }
+            } finally {
+                isSubmitting = false;
+                reportForm.querySelector('button[type="submit"]').disabled = false;
+            }
+        };
+
+        const setupRealtime = (userId) => {
+            if (realtimeChannel) sb.removeChannel(realtimeChannel);
+            realtimeChannel = sb.channel('time_entries_realtime')
+                .on('postgres_changes',
+                    { event: 'INSERT', schema: 'public', table: 'time_entries' },
+                    async (payload) => {
+                        await fetchTodaysActivity();
+                        if (payload.new.user_id === userId) {
+                            await fetchMyHistory(userId);
+                        }
+                    }
+                )
+                .subscribe();
+        };
+
+        // --- Event Listeners ---
+        loginBtn.addEventListener('click', handleLogin);
+        logoutBtn.addEventListener('click', handleLogout);
+
+        Object.values(actionBtns).forEach(btn => {
+            btn.addEventListener('click', () => addEntry(btn.dataset.mode));
+        });
+
+        reportForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const message = messageInput.value.trim();
+            if (message) addEntry('報告', message);
+        });
+
+        // --- Initial Load ---
+        const initialize = async () => {
+            sb.auth.onAuthStateChange((_event, session) => {
+                updateUI(session?.user ?? null);
+            });
+
+            const { data: { session } } = await sb.auth.getSession();
+            updateUI(session?.user ?? null);
+        };
+
+        initialize();
+    </script>
+</body>
+</html>
