@@ -230,10 +230,6 @@
                 const { data: { user } } = await sb.auth.getUser();
                 if (!user) return;
 
-                const { data: { session } } = await sb.auth.getSession();
-                console.log('session access_token exists:', !!session?.access_token);
-                console.log('user.id:', user.id);
-
                 const { error } = await sb.from('time_entries').insert({ user_id: user.id, mode, message });
                 if (error) {
                     console.error('Error adding entry:', error);

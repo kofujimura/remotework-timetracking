@@ -53,7 +53,7 @@ CREATE POLICY "Allow users to read their own entries" ON time_entries
 CREATE POLICY "Allow users to insert their own entries" ON time_entries
   FOR INSERT WITH CHECK (
     auth.uid() = user_id
-    AND (SELECT email FROM auth.users WHERE id = auth.uid()) LIKE '%@yourdomain.ac.jp'
+    AND (auth.jwt() ->> 'email') LIKE '%@yourdomain.ac.jp'
   );
 
 CREATE POLICY "Allow users to update their own entries" ON time_entries
