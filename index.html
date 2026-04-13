@@ -230,7 +230,7 @@
                 const { data: { user } } = await sb.auth.getUser();
                 if (!user) return;
 
-                const { error } = await sb.from('time_entries').insert({ mode, message });
+                const { error } = await sb.from('time_entries').insert({ user_id: user.id, mode, message });
                 if (error) {
                     console.error('Error adding entry:', error);
                     alert('記録に失敗しました。');
